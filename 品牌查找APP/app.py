@@ -62,7 +62,7 @@ def write_to_sheets(results):
     body = {'values': results}
     service.spreadsheets().values().append(
         spreadsheetId=SPREADSHEET_ID,
-        range="A1",
+        range="data!A1",
         valueInputOption="USER_ENTERED",
         body=body
     ).execute()
