@@ -23,98 +23,82 @@ def get_service():
     return build('sheets', 'v4', credentials=creds)
 
 def crawl_twincn(brand_name):
-    # 增加關鍵字精準度
     query = f"{brand_name} 台灣公司網 twincn"
-    print(f"🔍 搜尋關鍵字: {query}")
-    
+    print(f"🔍 搜尋中: {query}")
     try:
-        # 增加搜尋數量到 5，並增加停頓時間
-        urls = search(query, num_results=5, lang="zh-TW", sleep_interval=5)
-        
-        target_url = None
+        # 增加 pause 避免被封鎖
+        urls = search(query, num_results=5, lang="zh-TW", pause=5.0)
         for url in urls:
-            print(f"🔗 找到網址: {url}")
             if "twincn.com/item.aspx" in url or "twincn.com/L_item.aspx" in url:
-                target_url = url
-                break
-        
-        if target_url:
-            print(f"🎯 目標鎖定: {target_url}")
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-            resp = requests.get(target_url, headers=headers, timeout=15)
-            resp.encoding = 'utf-8'
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            # 1. 抓取正式抬頭 (twincn 的公司名稱通常在 h1 或特定 table 內)
-            company_title = ""
-            h1_tag = soup.find('h1')
-            if h1_tag:
-                company_title = h1_tag.text.strip().replace("公司基本資料", "")
-            
-            # 2. 抓取電話
-            phone = ""
-            # 台灣公司網的電話通常在一個包含「電話」字眼的 <td> 或是文本中
-            page_text = soup.get_text()
-            phone_match = re.search(r'0\d{1,2}-\d{6,8}', page_text)
-            if phone_match:
-                phone = phone_match.group()
-            
-            return company_title, phone
-        else:
-            print("⚠️ 搜尋結果中沒看到 twincn 的頁面")
-            return None, None
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                resp = requests.get(url, headers=headers, timeout=15)
+                resp.encoding = 'utf-8'
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                
+                # 抓取抬頭
+                h1_tag = soup.find('h1')
+                company_title = h1_tag.text.strip().replace("公司基本資料", "") if h1_tag else ""
+                
+                # 抓取電話
+                phone = ""
+                phone_match = re.search(r'0\d{1,2}-\d{6,8}', soup.get_text())
+                if phone_match: phone = phone_match.group()
+                
+                return company_title, phone
+        return None, None
     except Exception as e:
-        print(f"❌ 搜尋過程發生錯誤: {e}")
+        print(f"❌ 搜尋出錯: {e}")
         return None, None
 
 def main():
     service = get_service()
     sheet = service.spreadsheets()
-    range_name = f"{SHEET_NAME}!A:K"
     
-    print("📂 正在讀取 Google Sheets...")
-    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=range_name).execute()
+    # 讀取整張表
+    result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=f"{SHEET_NAME}!A:K").execute()
     values = result.get('values', [])
+    if not values: return
 
-    if not values:
-        print("❌ 試算表是空的")
-        return
-
-    # 找到欄位索引
     header = values[0]
+    # 確保抓到正確欄位索引
     try:
         col_brand = header.index("品牌名稱")
         col_status = header.index("狀態")
     except ValueError:
-        st.error("找不到 '品牌名稱' 或 '狀態' 欄位，請檢查標題列")
+        print("❌ 找不到欄位，請確認標題列是否有 '品牌名稱' 與 '狀態'")
         return
 
     for i, row in enumerate(values):
-        if i == 0: continue
+        if i == 0: continue # 跳過標題列
         if len(row) <= col_status: continue
         
         brand_name = row[col_brand]
         status = row[col_status]
         
-        # 檢查 J 欄 (索引 9) 是否已有資料
-        already_has_data = len(row) > 9 and row[9] != "" and row[9] != "查無資料"
-        
-        if status == "已分配" and not already_has_data:
-            print(f"🚀 開始處理品牌: {brand_name}")
-            official_title, phone = crawl_twincn(brand_name)
-            
-            # 回填
-            update_range = f"{SHEET_NAME}!J{i+1}:K{i+1}"
-            fill_title = official_title if official_title else "查無資料"
-            fill_phone = phone if phone else "查無資料"
-            
-            body = {'values': [[fill_title, fill_phone]]}
-            sheet.values().update(
-                spreadsheetId=SPREADSHEET_ID, range=update_range,
-                valueInputOption="USER_ENTERED", body=body).execute()
-            
-            print(f"📊 結果: {fill_title} / {fill_phone}")
-            time.sleep(10) # 雲端執行建議拉長間隔，防止被 Google 封鎖
+        # 核心防護：只有「已分配」且「J欄(索引9)沒有資料」才執行
+        # 且必須確保這一行真的有品牌名稱
+        if status == "已分配" and brand_name:
+            if len(row) <= 9 or not row[9]: # J欄為空才執行
+                print(f"🚀 處理品牌: {brand_name}")
+                official_title, phone = crawl_twincn(brand_name)
+                
+                # 第二道防護：如果抓不到東西，跳過，不進行任何 Update 動作
+                if not official_title and not phone:
+                    print(f"⏭️ 抓不到 {brand_name} 的資料，保留原狀，不更新。")
+                    continue
+                
+                # 準備更新 (只針對 J 與 K 欄)
+                update_range = f"{SHEET_NAME}!J{i+1}:K{i+1}"
+                body = {'values': [[official_title or "查無抬頭", phone or "查無電話"]]}
+                
+                sheet.values().update(
+                    spreadsheetId=SPREADSHEET_ID,
+                    range=update_range,
+                    valueInputOption="USER_ENTERED",
+                    body=body
+                ).execute()
+                print(f"✅ 更新成功: {official_title}")
+                time.sleep(10) # 休息避免被擋
 
 if __name__ == "__main__":
     main()
