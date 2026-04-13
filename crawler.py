@@ -33,29 +33,42 @@ def serper_request(query):
         return []
 
 def clean_company_name(raw_title):
-    # 移除常見干擾標記與網址描述
-    name = raw_title.split(' - ')[0].split(' | ')[0].split('｜')[0].split(' : ')[0].strip()
-    # 移除括號內容
-    name = re.sub(r'\(.*\)', '', name).strip()
+    """
+    清理標題，移除「投標廠商：」、「-台灣標案網」等雜質
+    """
+    # 1. 移除常見的前綴詞 (如 投標廠商: / 公司名稱: )
+    name = re.sub(r'^(投標廠商|公司名稱|廠商名稱|公司抬頭|基本資料|公司簡介)[:：\s]+', '', raw_title)
+    
+    # 2. 依照常見分隔符號切割，取第一段
+    # 處理「吉邦數位有限公司-台灣標案網」或「吉邦數位有限公司 | 台灣公司網」
+    name = name.split(' - ')[0].split(' | ')[0].split('｜')[0].split(' : ')[0].split(' : ')[0].strip()
+    
+    # 3. 移除括號內容 (包含全角半角)
+    name = re.sub(r'[\(（].*?[\)）]', '', name).strip()
+    
+    # 4. 再次移除可能殘留的後綴描述 (例如: 台灣標案網)
+    name = re.sub(r'(台灣標案網|台灣公司網|104人力銀行|1111人力銀行).*$', '', name).strip()
+    
     return name
 
 def is_valid_company_name(name):
-    """檢查字串是否包含正式公司的關鍵字"""
-    # 必須包含這些關鍵字之一，否則判定為非正確抬頭
+    """檢查字串是否包含正式公司的關鍵字，且排除非公司抬頭的內容"""
     keywords = ["公司", "集團", "行號", "有限", "工作室", "企業", "社企"]
-    # 排除常見的廣告或描述性字眼
-    invalid_keywords = ["一家", "身處", "領域", "官網", "介紹", "新聞", "評價"]
+    invalid_keywords = ["一家", "身處", "領域", "官網", "介紹", "新聞", "評價", "職缺", "徵才"]
     
+    # 必須包含公司關鍵字
     has_keyword = any(k in name for k in keywords)
+    # 不得包含描述性虛詞
     not_descriptive = not any(ik in name for ik in invalid_keywords)
-    not_too_long = len(name) < 25 # 公司全名通常不會超過25字
+    # 字數限制 (正式名稱通常在 4~25 字間)
+    is_proper_length = 4 <= len(name) < 25
     
-    return has_keyword and not_descriptive and not_too_long
+    return has_keyword and not_descriptive and is_proper_length
 
 def search_company_info(brand_name):
     print(f"🔎 步驟 1: 查找品牌正式抬頭 -> {brand_name}")
     
-    # 策略 A: 強制優先從「台灣公司網」搜尋
+    # 策略 A: 優先搜尋台灣公司網
     results_step1 = serper_request(f"{brand_name} site:twincn.com")
     
     official_title = ""
@@ -66,45 +79,48 @@ def search_company_info(brand_name):
             temp_name = clean_company_name(item.get("title", ""))
             if is_valid_company_name(temp_name):
                 official_title = temp_name
-                print(f"🎯 從台灣公司網命中正確抬頭: {official_title}")
+                print(f"🎯 從台灣公司網命中: {official_title}")
                 break
     
-    # 策略 B: 如果台灣公司網沒結果，廣泛搜尋並嚴格過濾
+    # 策略 B: 廣泛搜尋
     if not official_title:
-        print(f"⚠️ 台灣公司網未命中，嘗試廣泛搜尋...")
+        print(f"⚠️ 台灣公司網未命中，嘗試廣泛搜尋抬頭...")
         results_wide = serper_request(f"{brand_name} 台灣正式公司名稱")
         for item in results_wide:
             temp_name = clean_company_name(item.get("title", ""))
-            # 這裡會嚴格執行你要求的「必須有公司」判定
             if is_valid_company_name(temp_name):
                 official_title = temp_name
                 break
 
-    # 若最終還是沒找到符合「公司」關鍵字的標題
     if not official_title:
-        print(f"❌ 無法識別 {brand_name} 的正式公司抬頭")
+        print(f"❌ 無法識別 {brand_name} 的正式抬頭")
         return "查無品牌", "查無資料"
 
-    # 步驟 2: 查找電話
+    # --- 步驟 2: 查找電話 ---
     print(f"🔎 步驟 2: 查找電話 -> {official_title}")
-    results_step2 = serper_request(f"{official_title} site:twincn.com")
     
+    # 強大電話正則式
+    phone_pattern = r'\(?0\d{1,2}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}(?:#\d+)?'
+
+    results_step2 = serper_request(f"{official_title} site:twincn.com")
     found_phone = False
+    
     for item in results_step2:
-        snippet = item.get("snippet", "")
-        phone_match = re.search(r'0\d{1,2}-\d{6,8}', snippet)
+        search_content = (item.get("snippet", "") + " " + item.get("title", ""))
+        phone_match = re.search(phone_pattern, search_content)
         if phone_match:
-            phone = phone_match.group()
+            phone = phone_match.group().strip()
             found_phone = True
             break
     
     if not found_phone:
-        results_step3 = serper_request(f"{official_title} 電話")
-        for item in results_step3[:3]:
-            snippet = item.get("snippet", "")
-            phone_match = re.search(r'0\d{1,2}-\d{6,8}', snippet)
+        results_step3 = serper_request(f"{official_title} 電話 聯絡方式")
+        for item in results_step3[:5]:
+            search_content = (item.get("snippet", "") + " " + item.get("title", ""))
+            phone_match = re.search(phone_pattern, search_content)
             if phone_match:
-                phone = phone_match.group()
+                phone = phone_match.group().strip()
+                found_phone = True
                 break
 
     return official_title, phone
@@ -134,7 +150,6 @@ def main():
         existing_title = row[9].strip()  # J欄
         existing_phone = row[10].strip() # K欄
 
-        # 只要 J 或 K 有標記，或是 J 已經有內容，就不再處理
         is_processed = any(x in [existing_title, existing_phone] for x in ["查無品牌", "查無資料"])
         
         if status == "已分配" and not existing_title and not is_processed:
@@ -154,10 +169,10 @@ def main():
                 body=update_body
             ).execute()
             
-            print(f"✅ 處理完畢: {brand_name} -> {official_title} | {phone}")
-            time.sleep(1.5)
+            print(f"✅ 完成回填: {brand_name} -> {official_title} | {phone}")
+            time.sleep(1.2)
 
-    print("🏁 任務結束。")
+    print("🏁 所有處理已結束。")
 
 if __name__ == "__main__":
     main()
