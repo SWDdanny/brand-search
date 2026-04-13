@@ -35,21 +35,20 @@ def serper_request(query):
 def clean_company_name(raw_title):
     # 移除常見干擾標記與網址描述
     name = raw_title.split(' - ')[0].split(' | ')[0].split('｜')[0].split(' : ')[0].strip()
-    # 移除括號內的文字 (例如: 統一編號)
+    # 移除括號內容
     name = re.sub(r'\(.*\)', '', name).strip()
     return name
 
 def is_valid_company_name(name):
-    """檢查字串是否包含公司關鍵字，並排除描述性語句"""
-    keywords = ["公司", "集團", "行號", "有限", "工作室", "企業"]
-    invalid_keywords = ["一家", "身處", "領域", "科技公司", "官網", "介紹"]
+    """檢查字串是否包含正式公司的關鍵字"""
+    # 必須包含這些關鍵字之一，否則判定為非正確抬頭
+    keywords = ["公司", "集團", "行號", "有限", "工作室", "企業", "社企"]
+    # 排除常見的廣告或描述性字眼
+    invalid_keywords = ["一家", "身處", "領域", "官網", "介紹", "新聞", "評價"]
     
-    # 必須包含正確關鍵字
     has_keyword = any(k in name for k in keywords)
-    # 不得包含描述性虛詞
     not_descriptive = not any(ik in name for ik in invalid_keywords)
-    # 正式名稱通常不會太長
-    not_too_long = len(name) < 25
+    not_too_long = len(name) < 25 # 公司全名通常不會超過25字
     
     return has_keyword and not_descriptive and not_too_long
 
@@ -67,26 +66,27 @@ def search_company_info(brand_name):
             temp_name = clean_company_name(item.get("title", ""))
             if is_valid_company_name(temp_name):
                 official_title = temp_name
-                print(f"🎯 從台灣公司網命中: {official_title}")
+                print(f"🎯 從台灣公司網命中正確抬頭: {official_title}")
                 break
     
-    # 策略 B: 如果台灣公司網沒結果，進行廣泛搜尋但加強條件
+    # 策略 B: 如果台灣公司網沒結果，廣泛搜尋並嚴格過濾
     if not official_title:
-        print(f"⚠️ 台灣公司網未命中，嘗試廣泛搜尋正確抬頭...")
-        results_wide = serper_request(f"{brand_name} 台灣正式登記公司名稱")
+        print(f"⚠️ 台灣公司網未命中，嘗試廣泛搜尋...")
+        results_wide = serper_request(f"{brand_name} 台灣正式公司名稱")
         for item in results_wide:
             temp_name = clean_company_name(item.get("title", ""))
+            # 這裡會嚴格執行你要求的「必須有公司」判定
             if is_valid_company_name(temp_name):
                 official_title = temp_name
                 break
 
-    # 若最終還是沒找到合適的抬頭
+    # 若最終還是沒找到符合「公司」關鍵字的標題
     if not official_title:
+        print(f"❌ 無法識別 {brand_name} 的正式公司抬頭")
         return "查無品牌", "查無資料"
 
     # 步驟 2: 查找電話
     print(f"🔎 步驟 2: 查找電話 -> {official_title}")
-    # 針對確定的正式抬頭精確搜尋
     results_step2 = serper_request(f"{official_title} site:twincn.com")
     
     found_phone = False
@@ -99,7 +99,6 @@ def search_company_info(brand_name):
             break
     
     if not found_phone:
-        # 廣泛搜尋電話
         results_step3 = serper_request(f"{official_title} 電話")
         for item in results_step3[:3]:
             snippet = item.get("snippet", "")
@@ -135,7 +134,7 @@ def main():
         existing_title = row[9].strip()  # J欄
         existing_phone = row[10].strip() # K欄
 
-        # 判定邏輯：狀態已分配 且 J欄位空，且不曾被標記為查無資料
+        # 只要 J 或 K 有標記，或是 J 已經有內容，就不再處理
         is_processed = any(x in [existing_title, existing_phone] for x in ["查無品牌", "查無資料"])
         
         if status == "已分配" and not existing_title and not is_processed:
@@ -155,8 +154,8 @@ def main():
                 body=update_body
             ).execute()
             
-            print(f"✅ 回填成功: {brand_name} -> {official_title} | {phone}")
-            time.sleep(1.5) # 稍微加長間隔提高穩定度
+            print(f"✅ 處理完畢: {brand_name} -> {official_title} | {phone}")
+            time.sleep(1.5)
 
     print("🏁 任務結束。")
 
