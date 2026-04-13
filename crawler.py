@@ -21,10 +21,9 @@ def get_gspread_service():
     return build('sheets', 'v4', credentials=creds)
 
 def serper_request(query):
-    """封裝 Serper API 請求"""
     url = "https://google.serper.dev/search"
     api_key = os.getenv("SERPER_API_KEY")
-    payload = json.dumps({"q": query, "gl": "tw", "hl": "zh-tw", "num": 8})
+    payload = json.dumps({"q": query, "gl": "tw", "hl": "zh-tw", "num": 10})
     headers = {'X-API-KEY': api_key, 'Content-Type': 'application/json'}
     try:
         response = requests.post(url, headers=headers, data=payload, timeout=10)
@@ -34,57 +33,68 @@ def serper_request(query):
         return []
 
 def clean_company_name(raw_title):
-    """清理標題字串，提取可能的公司正式名稱"""
-    # 移除常見的干擾字眼
+    # 移除常見干擾標記
     name = raw_title.split(' - ')[0].split(' | ')[0].split('｜')[0].split(' : ')[0].strip()
-    # 只要包含「公司」、「有限」、「行號」等關鍵字，通常較準確
     return name
 
+def is_valid_company_name(name):
+    """檢查字串是否包含公司關鍵字"""
+    keywords = ["公司", "集團", "行號", "有限", "社企", "工作室", "企業"]
+    return any(k in name for k in keywords)
+
 def search_company_info(brand_name):
-    print(f"🔎 步驟 1: 查找公司正確抬頭 -> {brand_name}")
-    # 改用 "品牌名稱 台灣公司" 增加命中率
+    print(f"🔎 步驟 1: 查找品牌正式抬頭 -> {brand_name}")
     results_step1 = serper_request(f"{brand_name} 台灣公司")
     
     official_title = ""
     phone = "查無資料"
 
     if results_step1:
-        # 優先找標題中帶有「股份有限公司」或「有限公司」的結果
-        for item in results_step1:
-            title = item.get("title", "")
-            if "公司" in title or "有限公司" in title:
-                official_title = clean_company_name(title)
-                break
+        # 優先找「台灣公司網」的結果
+        tw_inc_res = next((item for item in results_step1 if "twincn.com" in item.get("link", "")), None)
         
-        # 如果都沒找到帶「公司」字眼的，取第一筆
+        if tw_inc_res:
+            temp_name = clean_company_name(tw_inc_res.get("title", ""))
+            if is_valid_company_name(temp_name):
+                official_title = temp_name
+        
+        # 如果沒找到台灣公司網，找其他標題帶有公司關鍵字的結果
         if not official_title:
-            official_title = clean_company_name(results_step1[0].get("title", ""))
+            for item in results_step1:
+                temp_name = clean_company_name(item.get("title", ""))
+                if is_valid_company_name(temp_name):
+                    official_title = temp_name
+                    break
 
-    # 步驟 2: 如果有找到抬頭，專攻台灣公司網找電話
-    if official_title and official_title != "查無資料":
-        print(f"🔎 步驟 2: 進入台灣公司網查找電話 -> {official_title}")
-        results_step2 = serper_request(f"{official_title} site:twincn.com")
-        
-        # 尋找 twincn 的結果
-        twincn_item = next((i for i in results_step2 if "twincn.com" in i.get("link", "")), None)
-        
-        if twincn_item:
-            snippet = twincn_item.get("snippet", "")
-            # 正規表達式找電話：例如 02-12345678 或 04-1234567
+    # 若最終還是沒找到合適的抬頭
+    if not official_title:
+        return "查無品牌", "查無資料"
+
+    # 步驟 2: 查找電話
+    print(f"🔎 步驟 2: 查找電話 -> {official_title}")
+    results_step2 = serper_request(f"{official_title} site:twincn.com")
+    
+    # 嘗試從 snippet 中抓取電話
+    found_phone = False
+    for item in results_step2:
+        snippet = item.get("snippet", "")
+        phone_match = re.search(r'0\d{1,2}-\d{6,8}', snippet)
+        if phone_match:
+            phone = phone_match.group()
+            found_phone = True
+            break
+    
+    # 如果台灣公司網沒電話，搜尋該公司名稱廣泛查找
+    if not found_phone:
+        results_step3 = serper_request(f"{official_title} 電話")
+        for item in results_step3[:3]:
+            snippet = item.get("snippet", "")
             phone_match = re.search(r'0\d{1,2}-\d{6,8}', snippet)
             if phone_match:
                 phone = phone_match.group()
-        
-        # 如果 twincn 沒電話，嘗試從一般搜尋結果找
-        if phone == "查無資料":
-            for item in results_step2[:3]: # 只看前三名
-                snippet = item.get("snippet", "")
-                phone_match = re.search(r'0\d{1,2}-\d{6,8}', snippet)
-                if phone_match:
-                    phone = phone_match.group()
-                    break
+                break
 
-    return (official_title or "查無資料"), phone
+    return official_title, phone
 
 def main():
     service = get_gspread_service()
@@ -95,7 +105,7 @@ def main():
         result = sheet.values().get(spreadsheetId=SPREADSHEET_ID, range=range_to_read).execute()
         rows = result.get('values', [])
     except Exception as e:
-        print(f"❌ 讀取試算表失敗，請檢查 ID 或權限: {e}")
+        print(f"❌ 讀取失敗: {e}")
         return
 
     if not rows:
@@ -106,12 +116,17 @@ def main():
         while len(row) < 11:
             row.append("")
 
-        brand_name = row[2]      # C欄
-        status = row[7].strip()  # H欄
-        existing_title = row[9].strip() # J欄
+        brand_name = row[2].strip()      # C欄
+        status = row[7].strip()          # H欄
+        existing_title = row[9].strip()  # J欄
+        existing_phone = row[10].strip() # K欄
 
-        if status == "已分配" and (not existing_title or existing_title == "查無資料"):
-            if not brand_name or brand_name == "查無資料":
+        # 判定邏輯：狀態已分配 且 (J欄與K欄只要有一個是空的，且都沒有查無資訊的標記)
+        # 如果 J 是 '查無品牌' 或 K 是 '查無資料'，就不再搜尋
+        is_processed = any(x in [existing_title, existing_phone] for x in ["查無品牌", "查無資料"])
+        
+        if status == "已分配" and not existing_title and not is_processed:
+            if not brand_name:
                 continue
                 
             official_title, phone = search_company_info(brand_name)
@@ -127,10 +142,10 @@ def main():
                 body=update_body
             ).execute()
             
-            print(f"✅ 完成回填: {official_title} | {phone}")
-            time.sleep(1.5) # 稍微加長間隔，確保搜尋穩定
+            print(f"✅ 回填成功: {brand_name} -> {official_title} | {phone}")
+            time.sleep(1.2)
 
-    print("🏁 所有品牌處理完畢！")
+    print("🏁 任務結束。")
 
 if __name__ == "__main__":
     main()
