@@ -7,8 +7,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 # --- 設定區 ---
-SPREADSHEET_ID = '你的試算表ID' 
-SHEET_NAME = 'Sheet1'          
+SPREADSHEET_ID = '1jb7MZ5w00zNs3T_I7lxT24nEChudAUnUnpXLm77sOXU' 
+SHEET_NAME = '品牌名單'          
 
 def get_gspread_service():
     scopes = ['https://www.googleapis.com/auth/spreadsheets']
