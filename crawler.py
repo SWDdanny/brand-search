@@ -69,7 +69,7 @@ def search_company_info(brand_name):
     print(f"🔎 步驟 1: 查找品牌正式抬頭 -> {brand_name}")
     
     # 策略 A: 優先搜尋台灣公司網
-    results_step1 = serper_request(f"{brand_name} site:twincn.com")
+    results_step1 = serper_request(f"{brand_name} twincn.com")
     
     official_title = ""
     phone = "查無資料"
