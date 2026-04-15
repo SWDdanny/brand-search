@@ -3,14 +3,18 @@ name: 自動品牌名單爬蟲
 on:
   schedule:
     - cron: '0 1 * * *'  # 每天凌晨一點執行
-  workflow_dispatch:      # 關鍵：允許 GAS 透過 API 手動觸發
+  workflow_dispatch:      # 允許 GAS 手動觸發
+
+# --- 新增：併發控制邏輯 [需求：解決重複觸發問題] ---
+concurrency:
+  group: crawler-group
+  cancel-in-progress: true  # 如果新的觸發進來了，就取消掉正在排隊或執行中的舊任務
 
 jobs:
   run_crawler:
     runs-on: ubuntu-latest
-    # 建議加上權限設定，確保 Action 有權限讀取內容
     permissions:
-      contents: read
+      contents: write  # 改為 write，若需要將執行紀錄 push 回 repo 時才不會報錯
 
     steps:
       - name: 複製程式碼
@@ -20,18 +24,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          # 加入快取可以縮短每次執行的時間
           cache: 'pip'
 
       - name: 安裝必要套件
         run: |
           python -m pip install --upgrade pip
+          # 檢查是否有 requirements.txt，有的話用 pip install -r 更好維護
           pip install google-api-python-client google-auth pandas beautifulsoup4 requests googlesearch-python
 
       - name: 執行爬蟲程式
         env:
-          # 這裡必須對應你在 GitHub Settings -> Secrets 中設定的名稱
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
           GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-          # 備註：Node 20+ 通常不需要手動強制 Node 24，除非你的環境有特殊報錯
         run: python crawler.py
