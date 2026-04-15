@@ -53,24 +53,50 @@ def is_valid_company_name(name):
 
 def get_phone_from_twincn_direct(official_title):
     """
-    直接爬取台灣公司網搜尋頁面，節省 Serper 次數
+    修正版：先搜尋公司名稱取得正確 ID，再進入內頁抓取電話
     """
-    print(f"🌐 直接連線台灣公司網查找電話: {official_title}")
-    search_url = f"https://twincn.com/item.aspx?no={official_title}"
+    print(f"🌐 正在台灣公司網搜尋: {official_title}")
+    
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Referer': 'https://twincn.com/'
     }
-    # 電話正則式：支援空格、分機#、括號區碼
+    
+    search_url = f"https://twincn.com/Search.aspx?q={urllib.parse.quote(official_title)}"
     phone_pattern = r'\(?0\d{1,2}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}(?:\s?#\d+)?'
     
     try:
-        # 直接搜尋公司名稱
-        resp = requests.get(f"https://twincn.com/Search.aspx?q={official_title}", headers=headers, timeout=15)
+        # 第一步：發送搜尋請求
+        resp = requests.get(search_url, headers=headers, timeout=15)
         if resp.status_code == 200:
-            # 嘗試在搜尋結果頁面或直接在頁面內容找電話
-            phone_match = re.search(phone_pattern, resp.text)
-            if phone_match:
-                return phone_match.group().strip()
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # 尋找搜尋結果清單中的第一個連結 (通常是 /item.aspx?no=數字)
+            # 台灣公司網的結果通常在 class="Titem" 或 <a> 標籤內
+            first_link = None
+            for a in soup.find_all('a', href=True):
+                if 'item.aspx?no=' in a['href']:
+                    first_link = "https://twincn.com/" + a['href'].lstrip('/')
+                    break
+            
+            # 第二步：如果找到正式內頁連結，進入內頁
+            target_url = first_link if first_link else search_url
+            if first_link:
+                print(f"🔗 找到正式內頁網址: {target_url}")
+                resp = requests.get(target_url, headers=headers, timeout=15)
+                soup = BeautifulSoup(resp.text, 'html.parser')
+
+            # 第三步：抓取電話 (從整頁純文字找)
+            page_text = soup.get_text(separator=' ')
+            phone_matches = re.findall(phone_pattern, page_text)
+            
+            if phone_matches:
+                for p in phone_matches:
+                    clean_p = p.strip()
+                    # 排除掉長度太短的錯誤號碼 (區碼+號碼至少 9 碼)
+                    if len(clean_p) >= 9:
+                        return clean_p
+                        
     except Exception as e:
         print(f"❌ 爬取台灣公司網出錯: {e}")
     
