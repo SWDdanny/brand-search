@@ -10,7 +10,7 @@ import urllib.parse
 
 # --- 設定區 ---
 SPREADSHEET_ID = '1jb7MZ5w00zNs3T_I7lxT24nEChudAUnUnpXLm77sOXU' 
-SHEET_NAME = '品牌名單' [cite: 18]
+SHEET_NAME = '品牌名單'
 
 def get_gspread_service():
     scopes = ['https://www.googleapis.com/auth/spreadsheets']
@@ -19,7 +19,7 @@ def get_gspread_service():
         raise ValueError("❌ 找不到環境變數 GCP_SERVICE_ACCOUNT")
     service_account_info = json.loads(secret_data)
     creds = service_account.Credentials.from_service_account_info(service_account_info, scopes=scopes)
-    return build('sheets', 'v4', credentials=creds) [cite: 18]
+    return build('sheets', 'v4', credentials=creds)
 
 def serper_request(query):
     url = "https://google.serper.dev/search"
@@ -31,20 +31,20 @@ def serper_request(query):
         return response.json().get("organic", [])
     except Exception as e:
         print(f"❌ Serper API 請求失敗: {e}")
-        return [] [cite: 19]
+        return []
 
 def clean_company_name(raw_title):
     name = re.sub(r'^(投標廠商|公司名稱|廠商名稱|公司抬頭|基本資料|公司簡介)[:：\s]+', '', raw_title)
     name = name.split(' - ')[0].split(' | ')[0].split('｜')[0].split(' : ')[0].strip()
     name = re.sub(r'[\(（].*?[\)）]', '', name).strip()
     name = re.sub(r'(台灣標案網|台灣公司網|104人力銀行|1111人力銀行|搜尋公司列表).*$', '', name).strip()
-    return name [cite: 20]
+    return name
 
 def extract_phone(text):
     if not text: return None
     phone_pattern = r'\(?0\d{1,2}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}(?:\s?#\d+)?'
     match = re.search(phone_pattern, text)
-    return match.group().strip() if match else None [cite: 21]
+    return match.group().strip() if match else None
 
 def get_info_from_twincn_page(url):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
@@ -59,11 +59,11 @@ def get_info_from_twincn_page(url):
             return "營業中", extract_phone(page_text)
     except Exception as e:
         print(f"❌ 內頁連線失敗 {url}: {e}")
-    return "連線失敗", None [cite: 22, 23]
+    return "連線失敗", None
 
 def search_company_info(brand_name):
     print(f"🔎 正在查詢: {brand_name}")
-    results = serper_request(f"{brand_name} twincn") # 改回最直接的關鍵字搜尋
+    results = serper_request(f"{brand_name} twincn") 
     
     found_inactive = False
     
@@ -76,31 +76,31 @@ def search_company_info(brand_name):
             if "twincn.com/item.aspx?no=" in link:
                 current_title = clean_company_name(title)
                 
-                # 策略：首筆 twincn 連結具有最高信任度
+                # 策略：首筆結果高度信任，或標題/摘要包含品牌前兩個字
                 if idx == 0 or brand_name[:2] in current_title or brand_name[:2] in snippet:
                     
-                    # 優先排除已停業項
+                    # 檢查摘要是否有停業字眼
                     if any(k in snippet for k in ["停業", "廢止", "歇業", "解散"]):
                         print(f"⚠️ 顯示已停業: {current_title}")
                         found_inactive = True
-                        continue [cite: 26, 27]
+                        continue
                     
                     # 1. 嘗試從摘要抓電話
                     s_phone = extract_phone(snippet)
                     if s_phone:
                         print(f"✨ 摘要直抓電話: {s_phone}")
-                        return current_title, s_phone [cite: 28]
+                        return current_title, s_phone
                     
-                    # 2. 摘要沒電話，強制進入內頁
+                    # 2. 摘要沒電話，進入內頁
                     print(f"🌐 進入內頁檢查: {link}")
                     status, p_phone = get_info_from_twincn_page(link)
                     if status == "營業中":
-                        return current_title, (p_phone if p_phone else "查無資料") [cite: 29, 30]
+                        return current_title, (p_phone if p_phone else "查無資料")
                     elif status == "已停業":
                         found_inactive = True
-                        continue [cite: 30]
+                        continue
 
-    return ("已停業" if found_inactive else "查無品牌"), "查無資料" [cite: 30]
+    return ("已停業" if found_inactive else "查無品牌"), "查無資料"
 
 def main():
     service = get_gspread_service()
@@ -114,7 +114,7 @@ def main():
         print(f"❌ 讀取失敗: {e}")
         return
 
-    if not rows: return [cite: 31]
+    if not rows: return
 
     for i, row in enumerate(rows):
         while len(row) < 11: row.append("")
@@ -138,7 +138,7 @@ def main():
                 ).execute()
                 print(f"✅ 完成回填: {brand_name} -> {official_title} | {phone}")
             except Exception as e:
-                print(f"❌ 更新錯誤: {e}") [cite: 32, 33, 34, 35]
+                print(f"❌ 更新錯誤: {e}")
             
             time.sleep(1.2)
 
