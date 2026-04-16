@@ -34,7 +34,7 @@ def serper_request(query):
         return []
 
 def clean_company_name(raw_title):
-    # 移除標題雜質，相容特殊組織名稱
+    # 清理標題，相容如圓山大飯店等特殊抬頭
     name = re.sub(r'^(投標廠商|公司名稱|廠商名稱|公司抬頭|基本資料|公司簡介)[:：\s]+', '', raw_title)
     name = name.split(' - ')[0].split(' | ')[0].split('｜')[0].split(' : ')[0].strip()
     name = re.sub(r'[\(（].*?[\)）]', '', name).strip()
@@ -43,16 +43,17 @@ def clean_company_name(raw_title):
 
 def extract_phone(text):
     """
-    支援括號, 空格, #分機, 橫槓 (-) 等多種格式
+    全格式電話提取：相容 (02)、空格、橫槓 -、分機 #
     """
     if not text: return None
+    # 正則強化版
     phone_pattern = r'\(?0\d{1,2}\)?[\s-]?\d{3,4}[\s-]?\d{3,4}(?:\s?#\d+)?'
     match = re.search(phone_pattern, text)
     return match.group().strip() if match else None
 
 def get_info_from_twincn_page(url):
     """
-    進入內頁檢查狀態與電話
+    進入內頁檢查營業狀態與電話
     """
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'}
     try:
@@ -61,59 +62,60 @@ def get_info_from_twincn_page(url):
             soup = BeautifulSoup(resp.text, 'html.parser')
             page_text = soup.get_text(separator=' ')
             
-            # 檢查營業狀態
+            # 營業狀態過濾
             inactive_keywords = ["停業以外之非營業中", "廢止", "歇業", "解散"]
             if any(k in page_text for k in inactive_keywords):
                 return "已停業", None
             
             return "營業中", extract_phone(page_text)
     except Exception as e:
-        print(f"❌ 進入頁面失敗 {url}: {e}")
+        print(f"❌ 內頁連線失敗 {url}: {e}")
     return "連線失敗", None
 
 def search_company_info(brand_name):
-    print(f"🔎 搜尋品牌: {brand_name}")
-    results = serper_request(f"{brand_name} twincn")
+    print(f"🔎 正在查詢: {brand_name}")
+    # 增加「公司」關鍵字以精準鎖定母公司資訊
+    results = serper_request(f"{brand_name} twincn 公司")
     
     found_inactive = False
     
     if results:
+        # 優先遍歷搜尋結果中的 twincn 連結
         for item in results:
             link = item.get("link", "")
             snippet = item.get("snippet", "")
             title = item.get("title", "")
             
-            # 鎖定台灣公司網內頁
             if "twincn.com/item.aspx?no=" in link:
                 current_title = clean_company_name(title)
                 
-                # --- 策略 1: 優先檢查搜尋摘要 (Snippet) ---
-                if any(k in snippet for k in ["停業", "廢止", "歇業", "解散"]):
-                    print(f"⚠️ 摘要顯示已停業: {current_title}")
-                    found_inactive = True
-                    continue
-                
-                snippet_phone = extract_phone(snippet)
-                if snippet_phone:
-                    print(f"✨ 從摘要直接抓到電話: {snippet_phone}")
-                    return current_title, snippet_phone
-                
-                # --- 策略 2: 摘要無電話時才進入內頁 ---
-                print(f"🌐 摘要無電話，進入內頁檢查: {link}")
-                status, page_phone = get_info_from_twincn_page(link)
-                
-                if status == "營業中":
-                    if page_phone:
-                        return current_title, page_phone
-                    else:
-                        print(f"ℹ️ 內頁無電話，嘗試下一個...")
+                # 策略：只要標題或摘要包含品牌前兩個字，或它是 Google 推薦的第一筆 twincn 連結
+                keyword = brand_name[:2]
+                if keyword in current_title or keyword in snippet or item.get("position") == 1:
+                    
+                    # 檢查摘要是否有停業字眼
+                    if any(k in snippet for k in ["停業", "廢止", "歇業", "解散"]):
+                        print(f"⚠️ 摘要顯示已停業: {current_title}")
+                        found_inactive = True
                         continue
-                elif status == "已停業":
-                    found_inactive = True
-                    continue
+                    
+                    # 優先從摘要抓電話 (最快)
+                    s_phone = extract_phone(snippet)
+                    if s_phone:
+                        print(f"✨ 摘要直抓電話: {s_phone}")
+                        return current_title, s_phone
+                    
+                    # 摘要沒電話，進內頁
+                    print(f"🌐 進入內頁檢查: {link}")
+                    status, p_phone = get_info_from_twincn_page(link)
+                    if status == "營業中":
+                        if p_phone: return current_title, p_phone
+                        else: continue # 沒電話就找下一個 twincn 連結
+                    elif status == "已停業":
+                        found_inactive = True
+                        continue
 
-    final_title = "已停業" if found_inactive else "查無品牌"
-    return final_title, "查無資料"
+    return ("已停業" if found_inactive else "查無品牌"), "查無資料"
 
 def main():
     service = get_gspread_service()
@@ -131,11 +133,11 @@ def main():
 
     for i, row in enumerate(rows):
         while len(row) < 11: row.append("")
-        brand_name = row[2].strip()      # C 欄
-        status = row[7].strip()          # H 欄
-        existing_title = row[9].strip()  # J 欄
+        brand_name = row[2].strip()
+        status = row[7].strip()
+        existing_title = row[9].strip()
         
-        # 僅處理已分配且尚未填寫正式抬頭的項目
+        # 僅處理已分配且未正確填寫的資料
         if status == "已分配" and (not existing_title or existing_title in ["查無品牌", "查無資料"]):
             if not brand_name: continue
             
@@ -143,20 +145,18 @@ def main():
             
             row_num = i + 2
             update_range = f"{SHEET_NAME}!J{row_num}:K{row_num}"
-            update_body = {"values": [[official_title, phone]]}
-            
             try:
                 sheet.values().update(
                     spreadsheetId=SPREADSHEET_ID,
                     range=update_range,
                     valueInputOption="RAW",
-                    body=update_body
+                    body={"values": [[official_title, phone]]}
                 ).execute()
-                print(f"✅ 完成: {brand_name} -> {official_title} | {phone}")
+                print(f"✅ 完成回填: {brand_name} -> {official_title} | {phone}")
             except Exception as e:
-                print(f"❌ 更新失敗: {e}")
+                print(f"❌ 更新錯誤: {e}")
             
-            time.sleep(1.2) # 防止頻率限制
+            time.sleep(1.2) # 避免 API 頻率限制
 
 if __name__ == "__main__":
     main()
